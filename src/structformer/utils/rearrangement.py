@@ -599,9 +599,9 @@ def show_pcs_with_labels(xyz, rgb, predictions, add_coordinate_frame=False, retu
     """ Display point clouds """
 
     assert len(predictions) == len(xyz) == len(rgb)
-
     unordered_pc = np.concatenate(xyz, axis=0)
     unordered_rgb = np.concatenate(rgb, axis=0)
+
     pcd = open3d.geometry.PointCloud()
     pcd.points = open3d.utility.Vector3dVector(unordered_pc)
     pcd.colors = open3d.utility.Vector3dVector(unordered_rgb)
