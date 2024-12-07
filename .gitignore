@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+.vscode/
+data_new_objects_test_split/
+*.tar
+
 # Distribution / packaging
 .Python
 build/
@@ -134,4 +138,3 @@ dmypy.json
 
 # Custom
 /experiments
-/models
