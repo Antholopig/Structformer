@@ -62,6 +62,8 @@ def run_demo(object_selection_model_dir, pose_generation_model_dir, dirs_config,
 
         print("\nSelect objects to rearrange...")
         print("Instruction:", object_selection_natural_sentence)
+        print("Raw goal specification:", goal_specification)
+        print("Raw sentence:", init_datum["sentence"])
         print("Visualize groundtruth (dot color) and prediction (ring color)")
         show_pcs_with_predictions(init_datum["xyzs"][:len(predictions)], init_datum["rgbs"][:len(predictions)],
                                   gts, predictions, add_table=True, side_view=True)
@@ -83,6 +85,9 @@ def run_demo(object_selection_model_dir, pose_generation_model_dir, dirs_config,
         pose_generation_datum = pose_generation_inference.dataset.prepare_test_data(obj_xyzs, obj_rgbs,
                                                                                     other_obj_xyzs, other_obj_rgbs,
                                                                                     goal_specification["shape"])
+
+        print("Prepared test sentence:", pose_generation_datum['sentence'])
+
         beam_data = []
         beam_pc_rearrangements = []
         for b in range(beam_size):

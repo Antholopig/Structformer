@@ -9,6 +9,7 @@ __pycache__/
 .vscode/
 data_new_objects_test_split/
 *.tar
+RUNCMD.md
 
 # Distribution / packaging
 .Python
