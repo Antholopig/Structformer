@@ -26,7 +26,7 @@ model:
     encoder_dropout: 0.2
     encoder_activation: gelu
     encoder_num_layers: 6
-    use_focal_loss: True
+    use_focal_loss: False
     focal_loss_gamma: 2
 
   pos_generation:

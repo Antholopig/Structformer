@@ -180,9 +180,8 @@ class ObjectSelectionWUtility(torch.nn.Module):
         self.object_encoder = PointTransformerEncoderSmall(output_dim=model_dim, input_dim=6, mean_center=True)
 
         # 256 = 240 (point cloud) + 8 (position idx) + 8 (token type)
-        self.mlp = EncoderMLP(model_dim, model_dim, uses_pt=False)
-
-        self.token_type_embeddings = nn.Parameter(torch.randn(1, 2, self.model_dim, requires_grad=True))
+        self.mlp = EncoderMLP(model_dim, model_dim-8, uses_pt=False)
+        self.token_type_embeddings = nn.Parameter(torch.randn(1, 1, 8, requires_grad=True))
 
         encoder_layers = TransformerEncoderLayer(model_dim, num_attention_heads,
                                                  encoder_hidden_dim, encoder_dropout, encoder_activation)
@@ -216,18 +215,15 @@ class ObjectSelectionWUtility(torch.nn.Module):
         #########################
         # XXX for utility
         utility_embed = utility.reshape(batch_size, 1, self.model_dim)
-        utility_pos_embed = self.token_type_embeddings[:, 0:1]
-        # XXX broadcasting
-        utility_embed = utility_embed + utility_pos_embed
 
         # XXX always valid
         utility_pad_mask = object_pad_mask[:, 0:1] * 0
 
         #########################
         # XXX we dont need this for utility
-        token_type_embed = self.token_type_embeddings[:, 1:2]
+        token_type_embed = self.token_type_embeddings.repeat(batch_size, num_objects, 1)
         # XXX multi-broadcasting
-        x = x + token_type_embed
+        x = torch.cat([x, token_type_embed], dim=-1)
 
         pad_mask = torch.cat([utility_pad_mask, object_pad_mask], dim=1)
         sequence_encode = torch.cat([utility_embed, x], dim=1)
