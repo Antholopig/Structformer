@@ -40,6 +40,25 @@ class DropoutSampler(torch.nn.Module):
         # x = F.dropout(x, self.dropout_rate)
         return self.predict(x)
 
+class DropoutSamplerUF(torch.nn.Module):
+    def __init__(self, num_features, num_outputs, dropout_rate = 0.5):
+        super(DropoutSamplerUF, self).__init__()
+        self.layer_norm = nn.LayerNorm(num_features)
+        self.linear = nn.Linear(num_features, num_features)
+        self.linear2 = nn.Linear(num_features, num_features)
+        self.predict = nn.Linear(num_features, num_outputs)
+        self.num_features = num_features
+        self.num_outputs = num_outputs
+        self.dropout_rate = dropout_rate
+
+    def forward(self, x):
+        x = self.layer_norm(x)
+        x = F.gelu(self.linear(x))
+        if self.dropout_rate > 0:
+            x = F.dropout(x, self.dropout_rate)
+        x = F.gelu(self.linear(x))
+        # x = F.dropout(x, self.dropout_rate)
+        return self.predict(x)
 
 class EncoderMLP(torch.nn.Module):
     def __init__(self, in_dim, out_dim, pt_dim=3, uses_pt=True):
@@ -794,7 +813,7 @@ class PriorContinuousOutBinaryPCT6D(torch.nn.Module):
             return out
 
 
-class UtilityFormerPoseGeneration(PriorContinuousOutEncoderDecoderStructPCT6DDropoutAllObjects):
+class UtilityFormerPoseGenerationWSentence(PriorContinuousOutEncoderDecoderStructPCT6DDropoutAllObjects):
     def __init__(self, vocab_size, model_dim=256,
                  num_attention_heads=8, encoder_hidden_dim=16, encoder_dropout=0.1, encoder_activation="relu",
                  encoder_num_layers=8, structure_dropout=0.0, object_dropout=0.0, theta_loss_divide=None, ignore_rgb=False):
@@ -847,8 +866,8 @@ class UtilityFormerPoseGeneration(PriorContinuousOutEncoderDecoderStructPCT6DDro
                                    dim_feedforward=encoder_hidden_dim,
                                    dropout=encoder_dropout)
 
-        self.struct_dist = DropoutSampler(model_dim, 3 + 6, dropout_rate=structure_dropout)
-        self.obj_dist = DropoutSampler(model_dim, 3 + 6, dropout_rate=object_dropout)
+        self.struct_dist = DropoutSamplerUF(model_dim, 3 + 6, dropout_rate=structure_dropout)
+        self.obj_dist = DropoutSamplerUF(model_dim, 3 + 6, dropout_rate=object_dropout)
 
     def forward(self, xyzs, rgbs, object_pad_mask, other_xyzs, other_rgbs, other_object_pad_mask,
                 sentence, sentence_pad_mask, token_type_index,
@@ -973,3 +992,183 @@ class UtilityFormerPoseGeneration(PriorContinuousOutEncoderDecoderStructPCT6DDro
                        "struct_theta_inputs": struct_theta_inputs}
 
         return predictions
+
+
+class UtilityFormerPoseGenerationWUtility(PriorContinuousOutEncoderDecoderStructPCT6DDropoutAllObjects):
+    def __init__(self, model_dim=256,
+                 num_attention_heads=8, encoder_hidden_dim=16, encoder_dropout=0.1, encoder_activation="relu",
+                 encoder_num_layers=8, structure_dropout=0.0, object_dropout=0.0, theta_loss_divide=None, ignore_rgb=False):
+        super(PriorContinuousOutEncoderDecoderStructPCT6DDropoutAllObjects, self).__init__()
+
+        print("Transformer Encoder Decoder Struct with Point Transformer 6D All Objects")
+        print("structure dropout", structure_dropout)
+        print("object dropout:", object_dropout)
+        print("theta loss divide:", theta_loss_divide)
+        print("ignore rgb:", ignore_rgb)
+
+        self.model_dim = model_dim
+        self.theta_loss_divide = theta_loss_divide
+        self.ignore_rgb = ignore_rgb
+
+        # object encode will have dim 256
+        if ignore_rgb:
+            self.object_encoder = PointTransformerEncoderSmall(output_dim=model_dim, input_dim=3, mean_center=True)
+        else:
+            self.object_encoder = PointTransformerEncoderSmall(output_dim=model_dim, input_dim=6, mean_center=True)
+
+        # 256 = 120 (point cloud) + 120 (position) + 8 (position idx) + 8 (token type)
+        # Important: we set uses_pt to true because we want the model to consider the positions of objects that
+        #  don't need to be rearranged.
+        self.mlp = EncoderMLP(model_dim, model_dim-16, uses_pt=True)
+        self.position_encoder = nn.Sequential(nn.Linear(3 + 3 * 3, (model_dim-16) // 2))
+        self.start_token_embeddings = nn.Embedding(1, model_dim-16)
+
+        self.point_cloud_downscale = nn.Linear(model_dim-16, (model_dim-16) // 2)
+
+        # type sentence, other obj pc, target object pc, struct
+        self.token_type_embeddings = nn.Embedding(4, 8)
+        # max number of objects or max length of sentence is 7
+        self.position_embeddings = nn.Embedding(16, 8)
+
+        print(num_attention_heads)
+        print(encoder_hidden_dim)
+        print(encoder_dropout)
+        print(encoder_activation)
+
+        # encoder_layers = TransformerEncoderLayer(256, num_attention_heads,
+        #                                          encoder_hidden_dim, encoder_dropout, encoder_activation)
+        # self.encoder = TransformerEncoder(encoder_layers, encoder_num_layers)
+        self.encoder = Transformer(d_model=model_dim,
+                                   nhead=num_attention_heads,
+                                   num_encoder_layers=encoder_num_layers,
+                                   num_decoder_layers=encoder_num_layers,
+                                   dim_feedforward=encoder_hidden_dim,
+                                   dropout=encoder_dropout)
+
+        self.struct_dist = DropoutSamplerUF(model_dim, 3 + 6, dropout_rate=structure_dropout)
+        self.obj_dist = DropoutSamplerUF(model_dim, 3 + 6, dropout_rate=object_dropout)
+
+    def forward(self, xyzs, rgbs, object_pad_mask, other_xyzs, other_rgbs, other_object_pad_mask,
+                utility, token_type_index, obj_x_inputs, obj_y_inputs, obj_z_inputs, obj_theta_inputs,
+                position_index, tgt_mask, start_token,
+                struct_x_inputs, struct_y_inputs, struct_z_inputs, struct_theta_inputs,
+                struct_position_index, struct_token_type_index, struct_pad_mask):
+
+        # print(xyzs.shape)
+        # print(object_pad_mask.shape)
+        # print(sentence.shape)
+        # print(sentence_pad_mask.shape)
+        # print(token_type_index.shape)
+        # print(obj_x_inputs.shape)
+        # print(obj_y_inputs.shape)
+        # print(obj_theta_inputs.shape)
+        # print(position_index.shape)
+
+        batch_size = object_pad_mask.shape[0]
+        num_target_objects = object_pad_mask.shape[1]
+        num_other_objects = other_object_pad_mask.shape[1]
+
+        #########################
+        obj_pc_embed = self.encode_pc(xyzs, rgbs, batch_size, num_target_objects)
+        other_obj_pc_embed = self.encode_pc(other_xyzs, other_rgbs, batch_size, num_other_objects)
+
+        obj_xytheta_inputs = torch.cat([obj_x_inputs.reshape(obj_x_inputs.shape[0], obj_x_inputs.shape[1], -1),
+                                    obj_y_inputs.reshape(obj_y_inputs.shape[0], obj_y_inputs.shape[1], -1),
+                                    obj_z_inputs.reshape(obj_z_inputs.shape[0], obj_z_inputs.shape[1], -1),
+                                    obj_theta_inputs.reshape(obj_theta_inputs.shape[0], obj_theta_inputs.shape[1], -1)],
+                                    dim=-1)
+        struct_xytheta_inputs = torch.cat([struct_x_inputs.reshape(struct_x_inputs.shape[0], struct_x_inputs.shape[1], -1),
+                                           struct_y_inputs.reshape(struct_y_inputs.shape[0], struct_y_inputs.shape[1], -1),
+                                           struct_z_inputs.reshape(struct_z_inputs.shape[0], struct_z_inputs.shape[1], -1),
+                                           struct_theta_inputs.reshape(struct_theta_inputs.shape[0], struct_theta_inputs.shape[1], -1)],
+                                           dim=-1)
+
+        xytheta_embed = self.position_encoder(torch.cat([struct_xytheta_inputs, obj_xytheta_inputs], dim=1))
+
+        # at this point, obj_pc_embed has size [batch size, num objs, 240], obj_xytheta_embed [batch size, num objs, 120]
+        # combine them into [batch size, num objs, 240]
+        # we need to shift obj_xytheta_embed to the right by one position and add a start token
+        start_token_embed = self.start_token_embeddings(start_token)
+        tgt_obj_embed = torch.cat([xytheta_embed[:, :-1, :], self.point_cloud_downscale(obj_pc_embed)], dim=-1)
+        tgt_obj_embed = torch.cat([start_token_embed, tgt_obj_embed], dim=1)
+
+        # src can't have access to groundtruth position information
+        # src should encode both target objects and other objects
+        src_obj_embed = torch.cat([other_obj_pc_embed, obj_pc_embed], dim=1)
+        # XXX something we will use
+        batch_size, num_objs, _ = src_obj_embed.size()
+
+        #########################
+        # XXX convert to proper form
+        utility_embed = utility.reshape(batch_size, 1, self.model_dim)
+
+        #########################
+        # XXX we dont need position embed for utility
+        position_embed = self.position_embeddings(position_index[:, -num_objs:])
+        token_type_embed = self.token_type_embeddings(token_type_index[:, -num_objs:])
+
+        # XXX we also need modify the padding
+        # XXX just want to align the form of padding and 0 means valid
+        utility_pad_mask = other_object_pad_mask[:, 0:1] * 0
+
+        struct_position_embed = self.position_embeddings(struct_position_index)
+        struct_token_type_embed = self.token_type_embeddings(struct_token_type_index)
+
+        # XXX we modify following lines to inject utility
+        # src_sequence_encode = torch.cat([word_embed, src_obj_embed], dim=1)
+        # src_sequence_encode = torch.cat([src_sequence_encode, position_embed, token_type_embed], dim=-1)
+        # src_pad_mask = torch.cat([sentence_pad_mask, other_object_pad_mask, object_pad_mask], dim=1)
+        src_sequence_encode = torch.cat([src_obj_embed, position_embed, token_type_embed], dim=-1)
+        src_sequence_encode = torch.cat([utility_embed, src_sequence_encode], dim=1)
+        src_pad_mask = torch.cat([utility_pad_mask, other_object_pad_mask, object_pad_mask], dim=1)
+
+        tgt_sequence_encode = tgt_obj_embed
+        tgt_position_embed = torch.cat([struct_position_embed, position_embed[:, -num_target_objects:, :]], dim=1)
+        tgt_token_type_embed = torch.cat([struct_token_type_embed, token_type_embed[:, -num_target_objects:, :]], dim=1)
+        tgt_sequence_encode = torch.cat([tgt_sequence_encode, tgt_position_embed, tgt_token_type_embed], dim=-1)
+        tgt_pad_mask = torch.cat([struct_pad_mask, object_pad_mask], dim=1)
+
+        assert tgt_mask.shape[0] == tgt_sequence_encode.shape[1], "sequence length of target mask and target sequence encodes don't match"
+
+        #########################
+        # sequence_encode: [batch size, sequence_length, encoder input dimension]
+        # input to transformer needs to have dimenion [sequence_length, batch size, encoder input dimension]
+        src_sequence_encode = src_sequence_encode.transpose(1, 0)
+        tgt_sequence_encode = tgt_sequence_encode.transpose(1, 0)
+
+        # convert to bool
+        src_pad_mask = (src_pad_mask == 1)
+        tgt_pad_mask = (tgt_pad_mask == 1)
+
+        # encode: [sequence_length, batch_size, embedding_size]
+        encode = self.encoder(src=src_sequence_encode, tgt=tgt_sequence_encode, tgt_mask=tgt_mask,
+                              src_key_padding_mask=src_pad_mask, tgt_key_padding_mask=tgt_pad_mask,
+                              memory_key_padding_mask=src_pad_mask)
+        encode = encode.transpose(1, 0)
+        #########################
+        obj_encodes = encode[:, -num_target_objects:, :]
+        obj_encodes = obj_encodes.reshape(-1, obj_encodes.shape[-1])
+        # dim: [batch_size, num_features]
+        obj_xyztheta_outputs = self.obj_dist(obj_encodes)
+
+        struct_encodes = encode[:, -num_target_objects-1, :]
+        struct_encodes = struct_encodes.reshape(-1, struct_encodes.shape[-1])
+        # use a different sampler for struct prediction since it should have larger variance than object predictions
+        struct_xyztheta_outputs = self.struct_dist(struct_encodes)
+
+        ########################
+        # input: batch * 6, output: batch * 3 * 3
+        obj_theta_outputs = compute_rotation_matrix_from_ortho6d(obj_xyztheta_outputs[:, 3:]).reshape(-1, 9)
+        struct_theta_inputs = compute_rotation_matrix_from_ortho6d(struct_xyztheta_outputs[:, 3:]).reshape(-1, 9)
+
+        predictions = {"obj_x_outputs": obj_xyztheta_outputs[:, 0].unsqueeze(1),
+                       "obj_y_outputs": obj_xyztheta_outputs[:, 1].unsqueeze(1),
+                       "obj_z_outputs": obj_xyztheta_outputs[:, 2].unsqueeze(1),
+                       "obj_theta_outputs": obj_theta_outputs,
+                       "struct_x_inputs": struct_xyztheta_outputs[:, 0].unsqueeze(1),
+                       "struct_y_inputs": struct_xyztheta_outputs[:, 1].unsqueeze(1),
+                       "struct_z_inputs": struct_xyztheta_outputs[:, 2].unsqueeze(1),
+                       "struct_theta_inputs": struct_theta_inputs}
+
+        return predictions
+    

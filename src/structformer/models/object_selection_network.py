@@ -163,3 +163,115 @@ class RearrangeObjectsPredictorPCT(torch.nn.Module):
                 predictions[key] = torch.sigmoid(predictions[key])
 
         return predictions
+    
+
+
+class ObjectSelectionWUtility(torch.nn.Module):
+
+    def __init__(self, model_dim=256,
+                 num_attention_heads=8, encoder_hidden_dim=16, encoder_dropout=0.1, encoder_activation="relu", encoder_num_layers=8,
+                 use_focal_loss=False, focal_loss_gamma=2):
+        super(ObjectSelectionWUtility, self).__init__()
+
+        print("Object Selection Network with Point Transformer")
+        self.model_dim = model_dim
+
+        # object encode will have dim 256
+        self.object_encoder = PointTransformerEncoderSmall(output_dim=model_dim, input_dim=6, mean_center=True)
+
+        # 256 = 240 (point cloud) + 8 (position idx) + 8 (token type)
+        self.mlp = EncoderMLP(model_dim, model_dim, uses_pt=False)
+
+        self.token_type_embeddings = nn.Parameter(torch.randn(1, 2, self.model_dim, requires_grad=True))
+
+        encoder_layers = TransformerEncoderLayer(model_dim, num_attention_heads,
+                                                 encoder_hidden_dim, encoder_dropout, encoder_activation)
+        self.encoder = TransformerEncoder(encoder_layers, encoder_num_layers)
+
+        self.rearrange_object_fier = nn.Sequential(nn.Linear(model_dim, model_dim),
+                                                   nn.LayerNorm(model_dim),
+                                                   nn.GELU(),
+                                                   nn.Linear(model_dim, model_dim // 2),
+                                                   nn.GELU(),
+                                                   nn.Linear(model_dim // 2, 1))
+
+        ###########################
+        if use_focal_loss:
+            print("use focal loss")
+            self.loss = FocalLoss(gamma=focal_loss_gamma)
+        else:
+            print("use standard BCE logit loss")
+            self.loss = nn.BCEWithLogitsLoss(reduction="mean")
+
+    def forward(self, xyzs, rgbs, object_pad_mask, utility):
+
+        batch_size = object_pad_mask.shape[0]
+        num_objects = object_pad_mask.shape[1]
+
+        #########################
+        center_xyz, x = self.object_encoder(xyzs, rgbs)
+        x = self.mlp(x, center_xyz)
+        x = x.reshape(batch_size, num_objects, -1)
+
+        #########################
+        # XXX for utility
+        utility_embed = utility.reshape(batch_size, 1, self.model_dim)
+        utility_pos_embed = self.token_type_embeddings[:, 0:1]
+        # XXX broadcasting
+        utility_embed = utility_embed + utility_pos_embed
+
+        # XXX always valid
+        utility_pad_mask = object_pad_mask[:, 0:1] * 0
+
+        #########################
+        # XXX we dont need this for utility
+        token_type_embed = self.token_type_embeddings[:, 1:2]
+        # XXX multi-broadcasting
+        x = x + token_type_embed
+
+        pad_mask = torch.cat([utility_pad_mask, object_pad_mask], dim=1)
+        sequence_encode = torch.cat([utility_embed, x], dim=1)
+        #########################
+        # sequence_encode: [batch size, sequence_length, encoder input dimension]
+        # input to transformer needs to have dimenion [sequence_length, batch size, encoder input dimension]
+        sequence_encode = sequence_encode.transpose(1, 0)
+
+        # convert to bool
+        pad_mask = (pad_mask == 1)
+
+        # encode: [sequence_length, batch_size, embedding_size]
+        encode = self.encoder(sequence_encode, src_key_padding_mask=pad_mask)
+        encode = encode.transpose(1, 0)
+        #########################
+        obj_encodes = encode[:, -num_objects:, :]
+        obj_encodes = obj_encodes.reshape(-1, obj_encodes.shape[-1])
+
+        rearrange_obj_labels = self.rearrange_object_fier(obj_encodes).squeeze(dim=1)  # batch_size * num_objects
+
+        predictions = {"rearrange_obj_labels": rearrange_obj_labels}
+
+        return predictions
+
+    def criterion(self, predictions, labels):
+
+        loss = 0
+        for key in predictions:
+
+            preds = predictions[key]
+            gts = labels[key]
+
+            mask = gts == -100
+            preds = preds[~mask]
+            gts = gts[~mask]
+
+            loss += self.loss(preds, gts)
+
+        return loss
+
+    def convert_logits(self, predictions):
+
+        for key in predictions:
+            if key == "rearrange_obj_labels":
+                predictions[key] = torch.sigmoid(predictions[key])
+
+        return predictions

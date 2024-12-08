@@ -42,10 +42,10 @@ def evaluate(gts, predictions, keys, debug=True, return_classification_dict=Fals
         num_objects = len(predicted_classes)
 
         if debug:
-            print(num_objects)
-            print(gts_for_key.shape)
-            print(predicted_classes.shape)
-            print(target_indices.shape)
+            print('num objects:', num_objects)
+            # print(gts_for_key.shape)
+            # print(predicted_classes.shape)
+            # print(target_indices.shape)
             print("Groundtruths:")
             print(gts_for_key[:100])
             print("Predictions")

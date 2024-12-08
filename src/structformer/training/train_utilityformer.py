@@ -21,12 +21,14 @@ from collections import defaultdict
 
 from torch.utils.data import DataLoader
 from structformer.data.sequence_dataset import SequenceDataset
-from structformer.models.pose_generation_network import UtilityFormerPoseGeneration
+from structformer.models.pose_generation_network import UtilityFormerPoseGenerationWSentence
+from structformer.models.utilityformer import UtilityFomrer
 from structformer.data.tokenizer import Tokenizer
 from structformer.utils.rearrangement import evaluate_prior_prediction, generate_square_subsequent_mask
+from structformer.training.train_object_selection_network import evaluate
 
 
-def train_model(cfg, model, data_iter, optimizer, warmup, num_epochs, device, save_best_model, grad_clipping=1.0):
+def train_model(cfg, model: UtilityFomrer, data_iter, optimizer, warmup, num_epochs, device, save_best_model, grad_clipping=1.0):
 
     if save_best_model:
         best_model_dir = os.path.join(cfg.experiment_dir, "best_model")
@@ -36,13 +38,23 @@ def train_model(cfg, model, data_iter, optimizer, warmup, num_epochs, device, sa
         best_score = -np.inf
 
     for epoch in range(num_epochs):
+        print('''+================================================================+
+| ____  _             _     _____          _       _             |
+|/ ___|| |_ __ _ _ __| |_  |_   _| __ __ _(_)_ __ (_)_ __   __ _ |
+|\___ \| __/ _` | '__| __|   | || '__/ _` | | '_ \| | '_ \ / _` ||
+| ___) | || (_| | |  | |_    | || | | (_| | | | | | | | | | (_| ||
+||____/ \__\__,_|_|   \__|   |_||_|  \__,_|_|_| |_|_|_| |_|\__, ||
+|                                                          |___/ |
++================================================================+''')
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
         print('-' * 10)
 
         model.train()
         epoch_loss = 0
-        gts = defaultdict(list)
-        predictions = defaultdict(list)
+        pos_gts = defaultdict(list)
+        pos_predictions = defaultdict(list)
+        obj_gts = defaultdict(list)
+        obj_predictions = defaultdict(list)
 
         with tqdm.tqdm(total=len(data_iter["train"])) as pbar:
             for step, batch in enumerate(data_iter["train"]):
@@ -75,20 +87,28 @@ def train_model(cfg, model, data_iter, optimizer, warmup, num_epochs, device, sa
                 start_token = torch.zeros((object_pad_mask.shape[0], 1), dtype=torch.long).to(device, non_blocking=True)
 
                 # output
-                targets = {}
+                pos_targets = {}
                 for key in ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
                             "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"]:
-                    targets[key] = batch[key].to(device, non_blocking=True)
-                    targets[key] = targets[key].reshape(targets[key].shape[0] * targets[key].shape[1], -1)
+                    pos_targets[key] = batch[key].to(device, non_blocking=True)
+                    pos_targets[key] = pos_targets[key].reshape(pos_targets[key].shape[0] * pos_targets[key].shape[1], -1)
 
-                preds = model.forward(xyzs, rgbs, object_pad_mask, other_xyzs, other_rgbs, other_object_pad_mask,
+                obj_targets = {}
+                # check datasets
+                obj_targets['rearrange_obj_labels'] = torch.cat([1 - object_pad_mask.float() + object_pad_mask.float() * -100.0,
+                                                                 other_object_pad_mask.float() * 0 + other_object_pad_mask.float() * -100.0], dim=1).reshape(-1)
+
+                (obj_preds, pos_preds) = model.forward(xyzs, rgbs, object_pad_mask, other_xyzs, other_rgbs, other_object_pad_mask,
                                       sentence, sentence_pad_mask, token_type_index,
                                       obj_x_inputs, obj_y_inputs, obj_z_inputs, obj_theta_inputs, position_index,
                                       tgt_mask, start_token,
                                       struct_x_inputs, struct_y_inputs, struct_z_inputs, struct_theta_inputs,
                                       struct_position_index, struct_token_type_index, struct_pad_mask)
 
-                loss = model.criterion(preds, targets)
+                loss_pos = model.criterion_pos(pos_preds, pos_targets)
+                loss_obj = model.criterion_obj(obj_preds, obj_targets)
+
+                loss = loss_pos + loss_obj
                 loss.backward()
 
                 if grad_clipping != 0.0:
@@ -101,18 +121,38 @@ def train_model(cfg, model, data_iter, optimizer, warmup, num_epochs, device, sa
 
                 for key in ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
                             "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"]:
-                    gts[key].append(targets[key].detach())
-                    predictions[key].append(preds[key].detach())
+                    pos_gts[key].append(pos_targets[key].detach())
+                    pos_predictions[key].append(pos_preds[key].detach())
+
+                for key in ["rearrange_obj_labels"]:
+                    obj_gts[key].append(obj_targets[key].detach())
+                    obj_predictions[key].append(obj_preds[key].detach())
 
                 pbar.update(1)
-                pbar.set_postfix({"Batch loss": loss})
+                pbar.set_postfix({"Batch loss": loss, 'Pos loss': loss_pos.item(), 'Obj loss': loss_obj.item()})
 
         warmup.step()
 
         print('[Epoch:{}]:  Training Loss:{:.4}'.format(epoch, epoch_loss))
-        evaluate_prior_prediction(gts, predictions, ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
+        print('''+==============================================+
+| ____   ___  ____    _______     ___    _     |
+||  _ \ / _ \/ ___|  | ____\ \   / / \  | |    |
+|| |_) | | | \___ \  |  _|  \ \ / / _ \ | |    |
+||  __/| |_| |___) | | |___  \ V / ___ \| |___ |
+||_|    \___/|____/  |_____|  \_/_/   \_\_____||
++==============================================+''')
+        evaluate_prior_prediction(pos_gts, pos_predictions, ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
                                     "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"])
 
+        print('''+==============================================+
+|  ___  ____      _   _______     ___    _     |
+| / _ \| __ )    | | | ____\ \   / / \  | |    |
+|| | | |  _ \ _  | | |  _|  \ \ / / _ \ | |    |
+|| |_| | |_) | |_| | | |___  \ V / ___ \| |___ |
+| \___/|____/ \___/  |_____|  \_/_/   \_\_____||
++==============================================+''')
+        evaluate(obj_gts, obj_predictions, ["rearrange_obj_labels"])
+        
         score = validate(cfg, model, data_iter["valid"], epoch, device)
         if save_best_model and score > best_score:
             print("Saving best model so far...")
@@ -122,7 +162,8 @@ def train_model(cfg, model, data_iter, optimizer, warmup, num_epochs, device, sa
     return model
 
 
-def validate(cfg, model, data_iter, epoch, device):
+@torch.no_grad()
+def validate(cfg, model: UtilityFomrer, data_iter, epoch, device):
     """
     helper function to evaluate the model
 
@@ -132,76 +173,112 @@ def validate(cfg, model, data_iter, epoch, device):
     :param device:
     :return:
     """
+    print('''+=========================================================================+
+| ____  _             _    __     __    _ _     _       _   _             |
+|/ ___|| |_ __ _ _ __| |_  \ \   / /_ _| (_) __| | __ _| |_(_) ___  _ __  |
+|\___ \| __/ _` | '__| __|  \ \ / / _` | | |/ _` |/ _` | __| |/ _ \| '_ \ |
+| ___) | || (_| | |  | |_    \ V / (_| | | | (_| | (_| | |_| | (_) | | | ||
+||____/ \__\__,_|_|   \__|    \_/ \__,_|_|_|\__,_|\__,_|\__|_|\___/|_| |_||
++=========================================================================+''')
 
     model.eval()
-
     epoch_loss = 0
-    gts = defaultdict(list)
-    predictions = defaultdict(list)
-    with torch.no_grad():
+    pos_gts = defaultdict(list)
+    pos_predictions = defaultdict(list)
+    obj_gts = defaultdict(list)
+    obj_predictions = defaultdict(list)
 
-        with tqdm.tqdm(total=len(data_iter)) as pbar:
-            for step, batch in enumerate(data_iter):
+    with tqdm.tqdm(total=len(data_iter)) as pbar:
+        for step, batch in enumerate(data_iter):
+            # input
+            xyzs = batch["xyzs"].to(device, non_blocking=True)
+            rgbs = batch["rgbs"].to(device, non_blocking=True)
+            object_pad_mask = batch["object_pad_mask"].to(device, non_blocking=True)
+            other_xyzs = batch["other_xyzs"].to(device, non_blocking=True)
+            other_rgbs = batch["other_rgbs"].to(device, non_blocking=True)
+            other_object_pad_mask = batch["other_object_pad_mask"].to(device, non_blocking=True)
+            sentence = batch["sentence"].to(device, non_blocking=True)
+            sentence_pad_mask = batch["sentence_pad_mask"].to(device, non_blocking=True)
+            token_type_index = batch["token_type_index"].to(device, non_blocking=True)
+            position_index = batch["position_index"].to(device, non_blocking=True)
+            obj_x_inputs = batch["obj_x_inputs"].to(device, non_blocking=True)
+            obj_y_inputs = batch["obj_y_inputs"].to(device, non_blocking=True)
+            obj_z_inputs = batch["obj_z_inputs"].to(device, non_blocking=True)
+            obj_theta_inputs = batch["obj_theta_inputs"].to(device, non_blocking=True)
 
-                # input
-                xyzs = batch["xyzs"].to(device, non_blocking=True)
-                rgbs = batch["rgbs"].to(device, non_blocking=True)
-                object_pad_mask = batch["object_pad_mask"].to(device, non_blocking=True)
-                other_xyzs = batch["other_xyzs"].to(device, non_blocking=True)
-                other_rgbs = batch["other_rgbs"].to(device, non_blocking=True)
-                other_object_pad_mask = batch["other_object_pad_mask"].to(device, non_blocking=True)
-                sentence = batch["sentence"].to(device, non_blocking=True)
-                sentence_pad_mask = batch["sentence_pad_mask"].to(device, non_blocking=True)
-                token_type_index = batch["token_type_index"].to(device, non_blocking=True)
-                position_index = batch["position_index"].to(device, non_blocking=True)
-                obj_x_inputs = batch["obj_x_inputs"].to(device, non_blocking=True)
-                obj_y_inputs = batch["obj_y_inputs"].to(device, non_blocking=True)
-                obj_z_inputs = batch["obj_z_inputs"].to(device, non_blocking=True)
-                obj_theta_inputs = batch["obj_theta_inputs"].to(device, non_blocking=True)
+            struct_x_inputs = batch["struct_x_inputs"].to(device, non_blocking=True)
+            struct_y_inputs = batch["struct_y_inputs"].to(device, non_blocking=True)
+            struct_z_inputs = batch["struct_z_inputs"].to(device, non_blocking=True)
+            struct_theta_inputs = batch["struct_theta_inputs"].to(device, non_blocking=True)
+            struct_position_index = batch["struct_position_index"].to(device, non_blocking=True)
+            struct_token_type_index = batch["struct_token_type_index"].to(device, non_blocking=True)
+            struct_pad_mask = batch["struct_pad_mask"].to(device, non_blocking=True)
 
-                struct_x_inputs = batch["struct_x_inputs"].to(device, non_blocking=True)
-                struct_y_inputs = batch["struct_y_inputs"].to(device, non_blocking=True)
-                struct_z_inputs = batch["struct_z_inputs"].to(device, non_blocking=True)
-                struct_theta_inputs = batch["struct_theta_inputs"].to(device, non_blocking=True)
-                struct_position_index = batch["struct_position_index"].to(device, non_blocking=True)
-                struct_token_type_index = batch["struct_token_type_index"].to(device, non_blocking=True)
-                struct_pad_mask = batch["struct_pad_mask"].to(device, non_blocking=True)
+            tgt_mask = generate_square_subsequent_mask(object_pad_mask.shape[1] + 1).to(device, non_blocking=True)
+            start_token = torch.zeros((object_pad_mask.shape[0], 1), dtype=torch.long).to(device, non_blocking=True)
 
-                tgt_mask = generate_square_subsequent_mask(object_pad_mask.shape[1] + 1).to(device, non_blocking=True)
-                start_token = torch.zeros((object_pad_mask.shape[0], 1), dtype=torch.long).to(device, non_blocking=True)
+            # output
+            pos_targets = {}
+            for key in ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
+                        "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"]:
+                pos_targets[key] = batch[key].to(device, non_blocking=True)
+                pos_targets[key] = pos_targets[key].reshape(pos_targets[key].shape[0] * pos_targets[key].shape[1], -1)
 
-                # output
-                targets = {}
-                for key in ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
-                            "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"]:
-                    targets[key] = batch[key].to(device, non_blocking=True)
-                    targets[key] = targets[key].reshape(targets[key].shape[0] * targets[key].shape[1], -1)
+            obj_targets = {}
+            # check datasets
+            obj_targets['rearrange_obj_labels'] = torch.cat([1 - object_pad_mask.float() + object_pad_mask.float() * -100.0,
+                 other_object_pad_mask.float() * 0 + other_object_pad_mask.float() * -100.0], dim=1).reshape(-1)
 
-                preds = model.forward(xyzs, rgbs, object_pad_mask, other_xyzs, other_rgbs, other_object_pad_mask,
-                                      sentence, sentence_pad_mask, token_type_index,
-                                      obj_x_inputs, obj_y_inputs, obj_z_inputs, obj_theta_inputs, position_index,
-                                      tgt_mask, start_token,
-                                      struct_x_inputs, struct_y_inputs, struct_z_inputs, struct_theta_inputs,
-                                      struct_position_index, struct_token_type_index, struct_pad_mask)
-                loss = model.criterion(preds, targets)
+            (obj_preds, pos_preds) = model.forward(xyzs, rgbs, object_pad_mask, other_xyzs, other_rgbs, other_object_pad_mask,
+                                    sentence, sentence_pad_mask, token_type_index,
+                                    obj_x_inputs, obj_y_inputs, obj_z_inputs, obj_theta_inputs, position_index,
+                                    tgt_mask, start_token,
+                                    struct_x_inputs, struct_y_inputs, struct_z_inputs, struct_theta_inputs,
+                                    struct_position_index, struct_token_type_index, struct_pad_mask)
 
-                for key in ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
-                            "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"]:
-                    gts[key].append(targets[key])
-                    predictions[key].append(preds[key])
+            loss_pos = model.criterion_pos(pos_preds, pos_targets)
+            loss_obj = model.criterion_obj(obj_preds, obj_targets)
 
-                epoch_loss += loss
-                pbar.update(1)
-                pbar.set_postfix({"Batch loss": loss})
+            loss = loss_pos + loss_obj
+            loss = loss.item()
+            epoch_loss += loss
+
+            for key in ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
+                        "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"]:
+                pos_gts[key].append(pos_targets[key].detach())
+                pos_predictions[key].append(pos_preds[key].detach())
+
+            for key in ["rearrange_obj_labels"]:
+                obj_gts[key].append(obj_targets[key].detach())
+                obj_predictions[key].append(obj_preds[key].detach())
+
+            pbar.update(1)
+            pbar.set_postfix({"Batch loss": loss, 'Pos loss': loss_pos.item(), 'Obj loss': loss_obj.item()})
 
     print('[Epoch:{}]:  Val Loss:{:.4}'.format(epoch, epoch_loss))
+    print('''+==============================================+
+| ____   ___  ____    _______     ___    _     |
+||  _ \ / _ \/ ___|  | ____\ \   / / \  | |    |
+|| |_) | | | \___ \  |  _|  \ \ / / _ \ | |    |
+||  __/| |_| |___) | | |___  \ V / ___ \| |___ |
+||_|    \___/|____/  |_____|  \_/_/   \_\_____||
++==============================================+''')
+    pos_score = evaluate_prior_prediction(pos_gts, pos_predictions, ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
+                                "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"])
 
-    score = evaluate_prior_prediction(gts, predictions,
-                     ["obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
-                      "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"])
-    return score
+    print('''+==============================================+
+|  ___  ____      _   _______     ___    _     |
+| / _ \| __ )    | | | ____\ \   / / \  | |    |
+|| | | |  _ \ _  | | |  _|  \ \ / / _ \ | |    |
+|| |_| | |_) | |_| | | |___  \ V / ___ \| |___ |
+| \___/|____/ \___/  |_____|  \_/_/   \_\_____||
++==============================================+''')
+    obj_score = evaluate(obj_gts, obj_predictions, ["rearrange_obj_labels"])
+    
+    return pos_score + obj_score
 
 
+# TODO modify this to utilityformer version
 def infer_once(cfg, model, batch, device):
 
     model.eval()
@@ -281,16 +358,10 @@ def load_model(model_dir, dirs_cfg):
 
     # initialize model
     model_cfg = cfg.model
-    model = UtilityFormerPoseGeneration(vocab_size,
-                                         num_attention_heads=model_cfg.num_attention_heads,
-                                         encoder_hidden_dim=model_cfg.encoder_hidden_dim,
-                                         encoder_dropout=model_cfg.encoder_dropout,
-                                         encoder_activation=model_cfg.encoder_activation,
-                                         encoder_num_layers=model_cfg.encoder_num_layers,
-                                         structure_dropout=model_cfg.structure_dropout,
-                                         object_dropout=model_cfg.object_dropout,
-                                         theta_loss_divide=model_cfg.theta_loss_divide,
-                                         ignore_rgb=model_cfg.ignore_rgb)
+    obj_selections_cfg = model_cfg.obj_selection
+    pos_generation_cfg = model_cfg.pos_generation
+    model = UtilityFomrer(vocab_size, model_cfg.model_dim, obj_selections_cfg, pos_generation_cfg)
+
     model.to(cfg.device)
 
     # load state dicts
@@ -353,20 +424,14 @@ def run_model(cfg):
 
     # load model
     model_cfg = cfg.model
-    model = UtilityFormerPoseGeneration(vocab_size,
-                                         num_attention_heads=model_cfg.num_attention_heads,
-                                         encoder_hidden_dim=model_cfg.encoder_hidden_dim,
-                                         encoder_dropout=model_cfg.encoder_dropout,
-                                         encoder_activation=model_cfg.encoder_activation,
-                                         encoder_num_layers=model_cfg.encoder_num_layers,
-                                         structure_dropout=model_cfg.structure_dropout,
-                                         object_dropout=model_cfg.object_dropout,
-                                         theta_loss_divide=model_cfg.theta_loss_divide,
-                                         ignore_rgb=model_cfg.ignore_rgb)
+    obj_selections_cfg = model_cfg.obj_selection
+    pos_generation_cfg = model_cfg.pos_generation
+    model = UtilityFomrer(vocab_size, model_cfg.model_dim, obj_selections_cfg, pos_generation_cfg)
+
     model.to(cfg.device)
 
     training_cfg = cfg.training
-    optimizer = optim.Adam(model.parameters(), lr=training_cfg.learning_rate, weight_decay=training_cfg.l2)
+    optimizer = optim.AdamW(model.parameters(), lr=training_cfg.learning_rate, weight_decay=training_cfg.l2, amsgrad=True)
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=training_cfg.lr_restart)
     warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=training_cfg.warmup,
                                     after_scheduler=scheduler)
