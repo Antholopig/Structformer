@@ -145,7 +145,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         valid1 = np.logical_and(depth1 > 0.1, depth1 < 2.)
 
         # proj_matrix = h5['proj_matrix'][()]
-        camera = cam.get_camera_from_h5(h5)
+        camera = cam.get_camera_from_h5(h5)  #camera参数
         if self.data_augmentation:
             depth1 = self.add_noise_to_depth(depth1)
 
@@ -207,13 +207,16 @@ class SequenceDataset(torch.utils.data.Dataset):
         :param shuffle_object_index: can be used to test different orders of objects
         :return:
         """
-
         filename = self.arrangement_data[idx]
 
         h5 = h5py.File(filename, 'r')
-        ids = self._get_ids(h5)
+        ids = self._get_ids(h5)  #获取物品数量
         # moved_objs = h5['moved_objs'][()].split(',')
+        """ 
+        例：[id_object_00,id_object_01,id_object_02,id_object_03]
+        """
         all_objs = sorted([o for o in ids.keys() if "object_" in o])
+       
         goal_specification = json.loads(str(np.array(h5["goal_specification"])))
         num_rearrange_objs = len(goal_specification["rearrange"]["objects"])
         num_other_objs = len(goal_specification["anchor"]["objects"] + goal_specification["distract"]["objects"])
@@ -231,7 +234,7 @@ class SequenceDataset(torch.utils.data.Dataset):
 
         # Important: ensure the order is correct
         if structure_parameters["type"] == "circle" or structure_parameters["type"] == "line":
-            target_objs = target_objs[::-1]
+            target_objs = target_objs[::-1]  #倒序
         elif structure_parameters["type"] == "tower" or structure_parameters["type"] == "dinner":
             target_objs = target_objs
         else:
@@ -632,7 +635,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         return datum
 
     @staticmethod
-    def convert_to_tensors(datum, tokenizer):
+    def convert_to_tensors(datum, tokenizer,use_utility_vector=False):
 
         object_pad_mask = torch.LongTensor(datum["object_pad_mask"])
         other_object_pad_mask = torch.LongTensor(datum["other_object_pad_mask"])
@@ -665,8 +668,6 @@ class SequenceDataset(torch.utils.data.Dataset):
             "other_xyzs": torch.stack(datum["other_xyzs"], dim=0),
             "other_rgbs": torch.stack(datum["other_rgbs"], dim=0),
             "other_object_pad_mask": other_object_pad_mask,
-            "sentence": sentence,
-            "sentence_pad_mask": sentence_pad_mask,
             "token_type_index": token_type_index,
             "obj_x_outputs": obj_x_outputs,
             "obj_y_outputs": obj_y_outputs,
@@ -678,7 +679,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             "obj_theta_inputs": obj_theta_inputs,
             "position_index": position_index,
             "t": datum["t"],
-            "filename": datum["filename"]
+            "filename": datum["filename"],
         }
 
         if "struct_position_index" in datum:
@@ -690,6 +691,14 @@ class SequenceDataset(torch.utils.data.Dataset):
             tensors["struct_y_inputs"] = struct_y_inputs
             tensors["struct_z_inputs"] = struct_z_inputs
             tensors["struct_theta_inputs"] = struct_theta_inputs
+
+        
+        if not use_utility_vector:
+            tensors.update({
+                "sentence": sentence,
+                "sentence_pad_mask": sentence_pad_mask,
+            })
+        
 
         return tensors
 
@@ -710,10 +719,14 @@ class SequenceDataset(torch.utils.data.Dataset):
         batched_data_dict = {}
         for key in ["xyzs", "rgbs", "other_xyzs", "other_rgbs"]:
             batched_data_dict[key] = torch.cat([dict[key] for dict in data], dim=0)
-        for key in ["object_pad_mask", "other_object_pad_mask", "sentence", "sentence_pad_mask", "token_type_index",
+        for key in ["object_pad_mask", "other_object_pad_mask", "token_type_index",
                     "obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
                     "obj_x_inputs", "obj_y_inputs", "obj_z_inputs", "obj_theta_inputs", "position_index"]:
             batched_data_dict[key] = torch.stack([dict[key] for dict in data], dim=0)
+        if "sentence" in data[0]:
+            for key in ["sentence", "sentence_pad_mask",]:
+                batched_data_dict[key] = torch.stack([dict[key] for dict in data], dim=0)
+        batched_data_dict["batch_size"] = len(data)
         if "struct_position_index" in data[0]:
             # use structure frame
             for key in ["struct_position_index", "struct_token_type_index", "struct_pad_mask",

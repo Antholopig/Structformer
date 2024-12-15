@@ -1,0 +1,8 @@
+experiment_dir: "experiments/12-15-11"
+
+dataset:
+  dirs:
+    - "StructFormer-Preference/circle_rearranged"
+  index_dirs:
+    - "index_34k"
+  vocab_dir: "data_new_objects/type_vocabs_coarse.json"

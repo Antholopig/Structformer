@@ -798,6 +798,42 @@ def save_pcs(xyz, rgb, save_path=None, return_buffer=False, add_coordinate_frame
     else:
         return None
 
+def save_pcs_for_server(xyz, rgb, save_path,add_coordinate_frame=False, side_view=False, add_table=True):
+
+    unordered_pc = np.concatenate(xyz, axis=0)
+    unordered_rgb = np.concatenate(rgb, axis=0)
+    pcd = open3d.geometry.PointCloud()
+    pcd.points = open3d.utility.Vector3dVector(unordered_pc)
+    pcd.colors = open3d.utility.Vector3dVector(unordered_rgb)
+    
+    table = None
+    if add_table:
+        table_color = [0.7, 0.7, 0.7]
+        origin = [0, -0.5, -0.03]
+        table = open3d.geometry.TriangleMesh.create_box(width=1.0, height=1.0, depth=0.02)
+        table.paint_uniform_color(table_color)
+        table.translate(origin)
+        #table_pcd = table.sample_points_uniformly(number_of_points=30000)  # 可调整点数
+        #pcd += table_pcd
+    
+    coordinate_frame = None
+    if add_coordinate_frame:
+        coordinate_frame = open3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+        #frame_pcd = mesh_frame.sample_points_uniformly(number_of_points=1000)  # 将坐标系转换为点云
+        #pcd += frame_pcd
+    
+    save_path = save_path.replace(".jpg",".ply")
+
+    # 保存点云数据到PLY文件
+    open3d.io.write_point_cloud(save_path, pcd)
+    
+    save_path_scene = save_path.replace(".ply", ".obj")
+    if table is not None:
+        scene = open3d.geometry.TriangleMesh()
+        scene += table
+        if coordinate_frame:
+            scene += coordinate_frame
+        open3d.io.write_triangle_mesh(save_path_scene, scene)
 
 def get_initial_scene_idxs(dataset):
     """

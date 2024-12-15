@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import json
 import random
+from pathlib import Path
 
 # from brain2.utils.info import logwarn
 # import brain2.utils.image as img
@@ -199,7 +200,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         filename = self.arrangement_data[idx]
         return filename
 
-    def get_raw_data(self, idx, inference_mode=False, shuffle_object_index=False):
+    def get_raw_data(self, idx=None, filename=None,inference_mode=False, shuffle_object_index=False):
         """
 
         :param idx:
@@ -208,9 +209,13 @@ class SequenceDataset(torch.utils.data.Dataset):
         :return:
         """
 
-        filename = self.arrangement_data[idx]
-
-        h5 = h5py.File(filename, 'r')
+        if idx is not None:
+            filename = self.arrangement_data[idx]
+        try:
+            h5 = h5py.File(filename, 'r')
+        except Exception as e:
+            print(filename)
+            print(e)
         ids = self._get_ids(h5)
         # moved_objs = h5['moved_objs'][()].split(',')
         all_objs = sorted([o for o in ids.keys() if "object_" in o])
@@ -723,8 +728,116 @@ class SequenceDataset(torch.utils.data.Dataset):
         return batched_data_dict
 
 
+class PreferenceSequenceDataset(SequenceDataset):
+    def __init__(self, data_roots, index_roots, split, tokenizer,
+                max_num_objects, max_num_other_objects,
+                max_num_shape_parameters, max_num_rearrange_features, max_num_anchor_features,
+                num_pts, use_structure_frame,
+                filter_num_moved_objects_range=None, shuffle_object_index=False,
+                data_augmentation=True, debug=False,
+                filter=[]):
+        """
+        :param data_roots:
+        :param index_roots:
+        :param split: train or test or valid
+        :param tokenizer: tokenizer object
+        :param max_num_objects: the max number of "query" objects
+        :param max_num_other_objects: the max number of "distractor" objects
+        :param max_num_shape_parameters: the max number of word tokens for describing the goal structure
+        :param max_num_rearrange_features: the max number of word tokens for describing the query objects
+        :param max_num_anchor_features: the max number of word tokens for describing the anchor objects
+        :param num_pts: the number of points for each object point cloud
+        :param use_structure_frame: whether object poses are in the structure frame or the world frame
+        :param filter_num_moved_objects_range: a tuple (min num, max num). If provided, scenes that have less than min num or more than max num of objects will be removed
+        :param shuffle_object_index: if set to true, shuffle the positions of target objects in the sequence
+        :param data_augmentation: if set to true, add noises to point clouds
+        :param debug:
+        :param filter: get a preference dataset
+        """
+        # Initialize the superclass (SequenceDataset)
+        super().__init__(data_roots, index_roots, split, tokenizer,
+                         max_num_objects, max_num_other_objects,
+                         max_num_shape_parameters, max_num_rearrange_features, max_num_anchor_features,
+                         num_pts, use_structure_frame,
+                         filter_num_moved_objects_range, shuffle_object_index,
+                         data_augmentation, debug)
+
+
+        # 筛选
+        self.arrangement_data = []
+        for data_root in data_roots:
+            data_fold = Path(data_root)
+            data_files = data_fold.glob("*.pth")
+            import re
+            for data_file in tqdm(data_files,desc=f"filting dataset by {filter}"):
+                sentence = torch.load(data_file)["sentence"]
+                natural_instruction = tokenizer.convert_structure_params_to_natural_language(sentence)
+                pattern = re.compile('.*'.join(f"(?=.*{re.escape(word)})" for word in filter), re.IGNORECASE)
+                if pattern.search(natural_instruction):
+                      self.arrangement_data.append(data_file)
+        print(f"dataset_num: { len(self.arrangement_data)}")
+    
+
+
+    def get_raw_data_from_preference(self, idx, inference_mode=False, shuffle_object_index=False):
+        """
+        :param idx:
+        :param inference_mode:
+        :param shuffle_object_index: can be used to test different orders of objects
+        :return:
+        """
+        preference_file = self.arrangement_data[idx]
+        preference_data = torch.load(preference_file)
+        raw_filename = preference_data["filename"]
+        raw_filename = raw_filename.replace('\\','/')
+        raw_filename = 'data_new_objects'+raw_filename.split('data_new_objects_test_split')[-1]
+        
+        datum = self.get_raw_data(filename = raw_filename,shuffle_object_index=self.shuffle_object_index)
+        
+        datum.update({
+            "_struct_x_0":preference_data["_struct_x_0"],
+            "_struct_y_0":preference_data["_struct_y_0"],
+            "_struct_z_0":preference_data["_struct_z_0"],
+            "_struct_theta_0":preference_data["_struct_theta_0"],
+            "_rearranged_xyz_0":preference_data["_rearranged_xyz_0"],
+            "_rearranged_rgb_0":preference_data["_rearranged_rgb_0"],
+            "_unchanged_xyz_0":preference_data["_unchanged_xyz_0"],
+            "_unchanged_rgb_0":preference_data["_unchanged_rgb_0"],
+        })
+        return datum
+         
+    def __len__(self):
+        return len(self.arrangement_data)     
+        
+    def __getitem__(self, idx):
+        raw_data = self.get_raw_data_from_preference(idx, shuffle_object_index=self.shuffle_object_index)
+        datum = self.convert_to_tensors(raw_data,
+                                        self.tokenizer)
+
+        return datum
+
 if __name__ == "__main__":
-    tokenizer = Tokenizer("/home/weiyu/data_drive/data_new_objects/type_vocabs_coarse.json")
+    
+    tokenizer = Tokenizer("data_new_objects/type_vocabs_coarse.json")
+    dataset = PreferenceSequenceDataset(data_roots=["StructFormer-Preference/circle_rearranged"],
+                              index_roots=["index_34k"],
+                              split="train",
+                              tokenizer=tokenizer,
+                              max_num_objects=7,
+                              max_num_other_objects=5,
+                              max_num_shape_parameters=5,
+                              max_num_rearrange_features=0,
+                              max_num_anchor_features=0,
+                              num_pts=1024,
+                              use_structure_frame=False,
+                              data_augmentation=False,
+                              debug=False,
+                              filter=["right","bottom"])
+    for i in range(0, 10):
+        d = dataset.get_raw_data_from_preference(i)
+    
+    
+    exit()
     dataset = SequenceDataset(data_roots=["/home/weiyu/data_drive/data_new_objects/examples_circle_new_objects/result"],
                               index_roots=["index_34k"],
                               split="train",

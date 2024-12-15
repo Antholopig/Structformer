@@ -4,7 +4,7 @@ import torch
 import copy
 
 import structformer.utils.transformations as tra
-from structformer.utils.rearrangement import show_pcs, save_pcs, move_one_object_pc, make_gifs, modify_language, sample_gaussians, fit_gaussians, show_pcs_color_order
+from structformer.utils.rearrangement import show_pcs, save_pcs,save_pcs_for_server, move_one_object_pc, make_gifs, modify_language, sample_gaussians, fit_gaussians, show_pcs_color_order
 
 
 class PointCloudRearrangement:
@@ -205,7 +205,6 @@ class PointCloudRearrangement:
         # initial scene and goal poses have to be set first
         assert all(len(self.initial_xyzs[k]) != 0 for k in ["xyzs", "rgbs"])
         assert all(len(self.goal_poses[k]) != 0 for k in self.goal_poses)
-
         # whether we are initializing or updating
         no_goal_xyzs_yet = True
         if len(self.goal_xyzs["xyzs"]):
@@ -236,7 +235,7 @@ class PointCloudRearrangement:
                 self.goal_xyzs["xyzs"][obj_idx] = imagined_obj_xyz
                 self.goal_xyzs["rgbs"][obj_idx] = imagined_obj_rgb
 
-    def visualize(self, time_step, add_other_objects=False,
+    def visualize(self, time_step, add_other_objects=False,server=True,
                   add_coordinate_frame=False, side_view=False, add_table=False,
                   show_vis=True, save_vis=False, save_filename=None, order_color=False):
 
@@ -258,6 +257,9 @@ class PointCloudRearrangement:
                 show_pcs(xyzs, rgbs, add_coordinate_frame=add_coordinate_frame, side_view=side_view, add_table=add_table)
             else:
                 show_pcs_color_order(xyzs, rgbs, add_coordinate_frame=add_coordinate_frame, side_view=side_view, add_table=add_table)
-
         if save_vis and save_filename is not None:
-            save_pcs(xyzs, rgbs, save_path=save_filename, add_coordinate_frame=add_coordinate_frame, side_view=side_view, add_table=add_table)
+            print(save_filename)
+            if server:
+                save_pcs_for_server(xyzs, rgbs, save_path=save_filename, add_coordinate_frame=add_coordinate_frame, side_view=side_view, add_table=add_table)
+            else:
+                save_pcs(xyzs, rgbs, save_path=save_filename, add_coordinate_frame=add_coordinate_frame, side_view=side_view, add_table=add_table)

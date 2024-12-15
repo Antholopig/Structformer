@@ -24,6 +24,7 @@ model:
   name: utilityformer
   model_dim: 256
   utility_vector: "avg_pool"
+  pretrained_model: "experiments/yutang"
   obj_selection:
     num_attention_heads: 8
     encoder_hidden_dim: 128
@@ -48,7 +49,7 @@ model:
 
 training:
   learning_rate: 0.0001
-  max_epochs: 20
+  max_epochs: 30
   l2: 0.0001
   lr_restart: 3000
   warmup: 10
@@ -56,7 +57,7 @@ training:
 inference:
   use_utility_vector: True
   beam_size: 3
-  max_scene_decodes: 30
+  max_scene_decodes: 1
   visualize: True
   visualize_action_sequence: False
   inference_visualization_dir: 'visualize'

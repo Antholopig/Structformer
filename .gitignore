@@ -8,7 +8,14 @@ __pycache__/
 
 .vscode/
 data_new_objects_test_split/
+data_new_objects/
+examples_circle_new_objects/
+models/
+models/
+StructFormer-Preference/
+visualize/
 *.tar
+*.zip
 RUNCMD.md
 
 # Distribution / packaging
