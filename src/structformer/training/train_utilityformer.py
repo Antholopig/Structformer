@@ -374,8 +374,6 @@ def load_model(model_dir, dirs_cfg):
     model_names = [name for name in checkpoint["model_state_dict"].keys()]
     # if there are no utility_embeddings
     if hasattr(model,"utility_embeddings") and "utility_embeddings.weight" not in model_names:
-        print("load utility embeddings")
-        print("~~~~~~~~~~~~~~~~~~~~~~~~~")
         word_embeddings = checkpoint["model_state_dict"]['word_embeddings.weight']
         utility_embeddings = torch.sum(word_embeddings,dim=0,keepdim=True)
         checkpoint["model_state_dict"].update({'utility_embeddings.weight':utility_embeddings})
