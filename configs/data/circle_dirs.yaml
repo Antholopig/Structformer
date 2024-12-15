@@ -1,8 +1,10 @@
-experiment_dir: ../../experiments/${env:DATETIME}
-dataset_base_dir: ???
+experiment_dir: "experiments/12-14-09"
+
+dataset_base_dir: "data_new_objects"
+
 dataset:
   dirs:
-    - ${dataset_base_dir}/examples_circle_new_objects/result
+    - "data_new_objects/examples_circle_new_objects/result"
   index_dirs:
-    - index_34k
-  vocab_dir: ${dataset_base_dir}/type_vocabs_coarse.json
+    - "index_34k"
+  vocab_dir: "data_new_objects/type_vocabs_coarse.json"

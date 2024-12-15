@@ -2,6 +2,7 @@ from __future__ import print_function, division
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from warmup_scheduler import GradualWarmupScheduler
@@ -20,7 +21,7 @@ from omegaconf import OmegaConf
 from collections import defaultdict
 
 from torch.utils.data import DataLoader
-from structformer.data.utility_dataset import SequenceDataset
+from structformer.data.utility_dataset import SequenceDataset,PreferenceSequenceDataset
 from structformer.models.pose_generation_network import UtilityFormerPoseGenerationWSentence
 from structformer.models.utilityformer import UtilityFomrer,UtilityFomrerUtilityOnly
 from structformer.data.tokenizer import Tokenizer
@@ -28,6 +29,48 @@ from structformer.utils.rearrangement import evaluate_prior_prediction, generate
 from structformer.training.train_object_selection_network import evaluate
 
 from rich import print
+from typing import Tuple
+
+def preference_loss(policy_chosen_logps: torch.FloatTensor,
+                    policy_rejected_logps: torch.FloatTensor,
+                    reference_chosen_logps: torch.FloatTensor,
+                    reference_rejected_logps: torch.FloatTensor,
+                    beta: float,
+                    label_smoothing: float = 0.0,
+                    ipo: bool = False,
+                    reference_free: bool = False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    """  
+    # policy_chosen_logps: 训练模型对于chosen经过log后logits
+    # policy_rejected_logps: 训练模型对于rejected经过log后logits
+    # reference_chosen_logps: 训练模型对于chosen经过log后logits
+    # reference_rejected_logps: 训练模型对于rejected经过log后logits
+    # beta: policy和reference的差异性控制参数
+    """
+        
+    # actor模型选择chosen优先于rejected
+    pi_logratios = policy_chosen_logps - policy_rejected_logps
+    # reference模型选择chosen优先于rejected
+    ref_logratios = reference_chosen_logps - reference_rejected_logps
+
+    if reference_free:
+        ref_logratios = 0
+        
+    logits = pi_logratios - ref_logratios  # also known as h_{\pi_\theta}^{y_w,y_l}
+
+    if ipo:
+        losses = (logits - 1/(2 * beta)) ** 2  
+    else:
+        losses = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
+        
+    # chosen和rejected的奖励
+    chosen_rewards = beta * (policy_chosen_logps - reference_chosen_logps).detach()
+    rejected_rewards = beta * (policy_rejected_logps - reference_rejected_logps).detach()
+
+    return losses, chosen_rewards, rejected_rewards
+
+
+
+
 
 def train_model(cfg, model: UtilityFomrer, data_iter, optimizer, warmup, num_epochs, device, save_best_model, grad_clipping=1.0):
 
@@ -321,7 +364,7 @@ def infer_once(cfg, model, batch, device):
         start_token = torch.zeros((object_pad_mask.shape[0], 1), dtype=torch.long).to(device, non_blocking=True)
 
         (obj_preds, pos_preds) = model.forward(xyzs, rgbs, object_pad_mask, other_xyzs, other_rgbs, other_object_pad_mask,
-                                    sentence,sentence_pad_mask,token_type_index,
+                                    sentence, sentence_pad_mask, token_type_index,
                                     obj_x_inputs, obj_y_inputs, obj_z_inputs, obj_theta_inputs, position_index,
                                     tgt_mask, start_token,
                                     struct_x_inputs, struct_y_inputs, struct_z_inputs, struct_theta_inputs,
@@ -336,6 +379,7 @@ def infer_once(cfg, model, batch, device):
 
 
 def save_model(model_dir, cfg, epoch, model, optimizer=None, scheduler=None):
+    print(f"save_model {epoch}")
     state_dict = {'epoch': epoch,
                   'model_state_dict': model.state_dict()}
     if optimizer is not None:
@@ -355,7 +399,7 @@ def load_model(model_dir, dirs_cfg):
     """
     # load dictionaries
     cfg = OmegaConf.load(os.path.join(model_dir, "config.yaml"))
-    if dirs_cfg is not None:
+    if dirs_cfg:
         cfg = OmegaConf.merge(cfg, dirs_cfg)
 
     data_cfg = cfg.dataset
@@ -369,17 +413,8 @@ def load_model(model_dir, dirs_cfg):
     model = UtilityFomrerUtilityOnly(vocab_size, model_cfg.model_dim, obj_selections_cfg, pos_generation_cfg)
 
     model.to(cfg.device)
-    #print(os.path.join(model_dir, "model.tar"))
     checkpoint = torch.load(os.path.join(model_dir, "model.tar"))
-    model_names = [name for name in checkpoint["model_state_dict"].keys()]
-    # if there are no utility_embeddings
-    if hasattr(model,"utility_embeddings") and "utility_embeddings.weight" not in model_names:
-        word_embeddings = checkpoint["model_state_dict"]['word_embeddings.weight']
-        utility_embeddings = torch.sum(word_embeddings,dim=0,keepdim=True)
-        checkpoint["model_state_dict"].update({'utility_embeddings.weight':utility_embeddings})
-    # load state dicts
-    model.load_state_dict(checkpoint['model_state_dict'])
-
+    model = load_model_from_pretrained(model,model_dir)
     
     optimizer = None
     if "optimizer_state_dict" in checkpoint:
@@ -396,6 +431,17 @@ def load_model(model_dir, dirs_cfg):
     epoch = checkpoint['epoch']
     return cfg, tokenizer, model, optimizer, scheduler, epoch
 
+def load_model_from_pretrained(model:UtilityFomrer,model_dir:str):
+    checkpoint = torch.load(os.path.join(model_dir, "model.tar"))
+    model_names = [name for name in checkpoint["model_state_dict"].keys()]
+    # if there are no utility_embeddings
+    if hasattr(model,"utility_embeddings") and "utility_embeddings" not in model_names:
+        word_embeddings = checkpoint["model_state_dict"]['word_embeddings.weight']
+        utility_embeddings = torch.mean(word_embeddings, dim=0, keepdim=True)*(word_embeddings.size(0)//10)
+        checkpoint["model_state_dict"].update({'utility_embeddings.weight':utility_embeddings})
+    # load state dicts
+    model.load_state_dict(checkpoint['model_state_dict'])
+    return model
 
 def run_model(cfg):
 
@@ -411,45 +457,48 @@ def run_model(cfg):
     tokenizer = Tokenizer(data_cfg.vocab_dir)
     vocab_size = tokenizer.get_vocab_size()
 
-    train_dataset = SequenceDataset(data_cfg.dirs, data_cfg.index_dirs, "test", tokenizer,
+    train_dataset = PreferenceSequenceDataset(data_cfg.dirs, data_cfg.index_dirs, "test", tokenizer,
                                     data_cfg.max_num_objects,
                                     data_cfg.max_num_other_objects,
                                     data_cfg.max_num_shape_parameters,
                                     data_cfg.max_num_rearrange_features,
                                     data_cfg.max_num_anchor_features,
                                     data_cfg.num_pts,
-                                    data_cfg.use_structure_frame)
-    valid_dataset = SequenceDataset(data_cfg.dirs, data_cfg.index_dirs, "test", tokenizer,
+                                    data_cfg.use_structure_frame,
+                                    filter=data_cfg.filter)
+    valid_dataset = PreferenceSequenceDataset(data_cfg.dirs, data_cfg.index_dirs, "test", tokenizer,
                                     data_cfg.max_num_objects,
                                     data_cfg.max_num_other_objects,
                                     data_cfg.max_num_shape_parameters,
                                     data_cfg.max_num_rearrange_features,
                                     data_cfg.max_num_anchor_features,
                                     data_cfg.num_pts,
-                                    data_cfg.use_structure_frame)
+                                    data_cfg.use_structure_frame,
+                                    filter = data_cfg.filter)
 
     data_iter = {}
     data_iter["train"] = DataLoader(train_dataset, batch_size=data_cfg.batch_size, shuffle=True,
-                                    collate_fn=SequenceDataset.collate_fn,
+                                    collate_fn=PreferenceSequenceDataset.collate_fn,
                                     pin_memory=data_cfg.pin_memory, num_workers=data_cfg.num_workers, persistent_workers=True)
     data_iter["valid"] = DataLoader(valid_dataset, batch_size=data_cfg.batch_size, shuffle=False,
-                                    collate_fn=SequenceDataset.collate_fn,
+                                    collate_fn=PreferenceSequenceDataset.collate_fn,
                                     pin_memory=data_cfg.pin_memory, num_workers=data_cfg.num_workers, persistent_workers=True)
-
-    if cfg.load_model_dir is None:
-        # load model
-        model_cfg = cfg.model
-        obj_selections_cfg = model_cfg.obj_selection
-        pos_generation_cfg = model_cfg.pos_generation
-        model = UtilityFomrer(vocab_size, model_cfg.model_dim, obj_selections_cfg, pos_generation_cfg)
-    else:
-        _, tokenizer, model, _, _, _ = load_model(cfg.load_model_dir, None)
-        print('Model Loaded')
-
+    
+    # load model
+    model_cfg = cfg.model
+    obj_selections_cfg = model_cfg.obj_selection
+    pos_generation_cfg = model_cfg.pos_generation
+    model = UtilityFomrerUtilityOnly(vocab_size, model_cfg.model_dim, obj_selections_cfg, pos_generation_cfg)
     model.to(cfg.device)
+    model = load_model_from_pretrained(model,model_dir=model_cfg.pretrained_model)
+    
+    for name, parameter in model.named_parameters():
+        if "utility_embeddings" not in name:
+            parameter.requires_grad = False
+
 
     training_cfg = cfg.training
-    optimizer = optim.AdamW(model.parameters(), lr=training_cfg.learning_rate, weight_decay=training_cfg.l2, amsgrad=True)
+    optimizer = optim.AdamW(filter(lambda p : p.requires_grad, model.parameters()), lr=training_cfg.learning_rate, weight_decay=training_cfg.l2, amsgrad=True)
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=training_cfg.lr_restart)
     warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=training_cfg.warmup,
                                     after_scheduler=scheduler)
@@ -462,7 +511,7 @@ def run_model(cfg):
         print("Saving model to {}".format(model_dir))
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
-        save_model(model_dir, cfg, cfg.max_epochs, model, optimizer, scheduler)
+        save_model(model_dir, cfg, cfg.training.max_epochs, model, optimizer, scheduler)
 
 
 if __name__ == "__main__":
@@ -470,13 +519,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a simple model")
     parser.add_argument("--dataset_base_dir", help='location of the dataset', type=str)
     parser.add_argument("--main_config", help='config yaml file for the model',
-                        default='configs/utilityformer.yaml',
+                        default='configs/utilityformer_preference.yaml',
                         type=str)
     parser.add_argument("--dirs_config", help='config yaml file for directories',
-                        default='configs/data/circle_dirs.yaml',
-                        type=str)
-    parser.add_argument("--load_model_dir", help='config yaml file for model loading',
-                        default=None,
+                        default='configs/data/preference_circle.yaml',
                         type=str)
     args = parser.parse_args()
 
@@ -492,12 +538,7 @@ if __name__ == "__main__":
     dirs_cfg = OmegaConf.load(args.dirs_config)
 
     cfg = OmegaConf.merge(main_cfg, dirs_cfg)
-<<<<<<< HEAD
-    cfg.dataset_base_dir = args.dataset_base_dir
-    cfg.load_model_dir = args.load_model_dir
-=======
 
->>>>>>> 3df7a353c9fd1a2b459dcbd420a7b8d39805b178
     OmegaConf.resolve(cfg)
 
     if not os.path.exists(cfg.experiment_dir):

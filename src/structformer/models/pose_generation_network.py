@@ -1077,6 +1077,7 @@ class UtilityFormerPoseGenerationWUtility(PriorContinuousOutEncoderDecoderStruct
                                     obj_z_inputs.reshape(obj_z_inputs.shape[0], obj_z_inputs.shape[1], -1),
                                     obj_theta_inputs.reshape(obj_theta_inputs.shape[0], obj_theta_inputs.shape[1], -1)],
                                     dim=-1)
+        struct_theta_inputs.reshape(struct_theta_inputs.shape[0], struct_theta_inputs.shape[1], -1)
         struct_xytheta_inputs = torch.cat([struct_x_inputs.reshape(struct_x_inputs.shape[0], struct_x_inputs.shape[1], -1),
                                            struct_y_inputs.reshape(struct_y_inputs.shape[0], struct_y_inputs.shape[1], -1),
                                            struct_z_inputs.reshape(struct_z_inputs.shape[0], struct_z_inputs.shape[1], -1),
@@ -1144,6 +1145,7 @@ class UtilityFormerPoseGenerationWUtility(PriorContinuousOutEncoderDecoderStruct
         encode = self.encoder(src=src_sequence_encode, tgt=tgt_sequence_encode, tgt_mask=tgt_mask,
                               src_key_padding_mask=src_pad_mask, tgt_key_padding_mask=tgt_pad_mask,
                               memory_key_padding_mask=src_pad_mask)
+        
         encode = encode.transpose(1, 0)
         #########################
         obj_encodes = encode[:, -num_target_objects:, :]
@@ -1161,7 +1163,8 @@ class UtilityFormerPoseGenerationWUtility(PriorContinuousOutEncoderDecoderStruct
         obj_theta_outputs = compute_rotation_matrix_from_ortho6d(obj_xyztheta_outputs[:, 3:]).reshape(-1, 9)
         struct_theta_inputs = compute_rotation_matrix_from_ortho6d(struct_xyztheta_outputs[:, 3:]).reshape(-1, 9)
 
-        predictions = {"obj_x_outputs": obj_xyztheta_outputs[:, 0].unsqueeze(1),
+        predictions = {
+                        "obj_x_outputs": obj_xyztheta_outputs[:, 0].unsqueeze(1),
                        "obj_y_outputs": obj_xyztheta_outputs[:, 1].unsqueeze(1),
                        "obj_z_outputs": obj_xyztheta_outputs[:, 2].unsqueeze(1),
                        "obj_theta_outputs": obj_theta_outputs,

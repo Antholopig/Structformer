@@ -190,7 +190,6 @@ class Tokenizer:
                     min_value, max_value, num_bins = self.type_vocabs[typ]
                     assert min_value <= value <= max_value, "type {} value {} exceeds {} and {}".format(typ, value, min_value, max_value)
                     dv = min(int((value - min_value) / ((max_value - min_value) / num_bins)), num_bins - 1)
-                    # print(value, dv, "{}:{}".format(typ, dv))
                     idx = self.vocab["{}:{}".format(typ, dv)]
             else:
                 raise KeyError("Do not recognize the type {} of the given token: {}".format(typ, value))
