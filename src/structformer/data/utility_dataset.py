@@ -383,6 +383,43 @@ class SequenceDataset(torch.utils.data.Dataset):
             sentence.append(("PAD", None))
             sentence_pad_mask.append(1)
 
+        # object selection
+        is_anchor = len(goal_specification["anchor"]["features"]) > 0
+        # rearrange
+        for tf in goal_specification["rearrange"]["features"]:
+            comparator = tf["comparator"]
+            type = tf["type"]
+            value = tf["value"]
+            if comparator is None:
+                # discrete features
+                if is_anchor:
+                    # leave the desired value to be inferred from anchor
+                    sentence.append(("MASK", type))
+                else:
+                    sentence.append((value, type))
+            else:
+                # continous features
+                sentence.append((comparator, type))
+            sentence_pad_mask.append(0)
+
+        # pad
+        for i in range(self.max_num_rearrange_features - len(goal_specification["rearrange"]["features"])):
+            sentence.append(tuple(["PAD"]))
+            sentence_pad_mask.append(1)
+
+        # anchor
+        for tf in goal_specification["anchor"]["features"]:
+            assert tf["comparator"] is None
+            type = tf["type"]
+            value = tf["value"]
+            # discrete features
+            sentence.append((value, type))
+            sentence_pad_mask.append(0)
+        # pad
+        for i in range(self.max_num_anchor_features - len(goal_specification["anchor"]["features"])):
+            sentence.append(tuple(["PAD"]))
+            sentence_pad_mask.append(1)
+
         ###################################
         # Important: IGNORE key is used to avoid computing loss. -100 is the default ignore_index for NLLLoss and MSE Loss
         obj_xytheta_outputs = []
@@ -576,6 +613,56 @@ class SequenceDataset(torch.utils.data.Dataset):
             for _ in range(4):
                 sentence_pad_mask.append(0)
             sentence.append(("PAD", None))
+            sentence_pad_mask.append(1)
+
+        # object selection
+        is_anchor = len(goal_specification["anchor"]["features"]) > 0
+        # rearrange
+        for tf in goal_specification["rearrange"]["features"]:
+            comparator = tf["comparator"]
+            type = tf["type"]
+            value = tf["value"]
+            if comparator is None:
+                # discrete features
+                if is_anchor:
+                    # leave the desired value to be inferred from anchor
+                    sentence.append(("MASK", type))
+                else:
+                    sentence.append((value, type))
+            else:
+                # continous features
+                sentence.append((comparator, type))
+            sentence_pad_mask.append(0)
+
+        # pad
+        for i in range(self.max_num_rearrange_features - len(goal_specification["rearrange"]["features"])):
+            sentence.append(tuple(["PAD"]))
+            sentence_pad_mask.append(1)
+
+        # anchor
+        for tf in goal_specification["anchor"]["features"]:
+            assert tf["comparator"] is None
+            type = tf["type"]
+            value = tf["value"]
+            # discrete features
+            sentence.append((value, type))
+            sentence_pad_mask.append(0)
+        # pad
+        for i in range(self.max_num_anchor_features - len(goal_specification["anchor"]["features"])):
+            sentence.append(tuple(["PAD"]))
+            sentence_pad_mask.append(1)
+
+        # anchor
+        for tf in goal_specification["anchor"]["features"]:
+            assert tf["comparator"] is None
+            type = tf["type"]
+            value = tf["value"]
+            # discrete features
+            sentence.append((value, type))
+            sentence_pad_mask.append(0)
+        # pad
+        for i in range(self.max_num_anchor_features - len(goal_specification["anchor"]["features"])):
+            sentence.append(tuple(["PAD"]))
             sentence_pad_mask.append(1)
 
         # placeholder for pose predictions

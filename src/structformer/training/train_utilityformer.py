@@ -20,7 +20,7 @@ from omegaconf import OmegaConf
 from collections import defaultdict
 
 from torch.utils.data import DataLoader
-from structformer.data.sequence_dataset import SequenceDataset
+from structformer.data.utility_dataset import SequenceDataset
 from structformer.models.pose_generation_network import UtilityFormerPoseGenerationWSentence
 from structformer.models.utilityformer import UtilityFomrer
 from structformer.data.tokenizer import Tokenizer
@@ -349,7 +349,7 @@ def load_model(model_dir, dirs_cfg):
     """
     # load dictionaries
     cfg = OmegaConf.load(os.path.join(model_dir, "config.yaml"))
-    if dirs_cfg:
+    if dirs_cfg is not None:
         cfg = OmegaConf.merge(cfg, dirs_cfg)
 
     data_cfg = cfg.dataset
@@ -422,11 +422,15 @@ def run_model(cfg):
                                     collate_fn=SequenceDataset.collate_fn,
                                     pin_memory=data_cfg.pin_memory, num_workers=data_cfg.num_workers, persistent_workers=True)
 
-    # load model
-    model_cfg = cfg.model
-    obj_selections_cfg = model_cfg.obj_selection
-    pos_generation_cfg = model_cfg.pos_generation
-    model = UtilityFomrer(vocab_size, model_cfg.model_dim, obj_selections_cfg, pos_generation_cfg)
+    if cfg.load_model_dir is None:
+        # load model
+        model_cfg = cfg.model
+        obj_selections_cfg = model_cfg.obj_selection
+        pos_generation_cfg = model_cfg.pos_generation
+        model = UtilityFomrer(vocab_size, model_cfg.model_dim, obj_selections_cfg, pos_generation_cfg)
+    else:
+        _, tokenizer, model, _, _, _ = load_model(cfg.load_model_dir, None)
+        print('Model Loaded')
 
     model.to(cfg.device)
 
@@ -457,6 +461,9 @@ if __name__ == "__main__":
     parser.add_argument("--dirs_config", help='config yaml file for directories',
                         default='../configs/data/circle_dirs.yaml',
                         type=str)
+    parser.add_argument("--load_model_dir", help='config yaml file for model loading',
+                        default=None,
+                        type=str)
     args = parser.parse_args()
 
     # # debug
@@ -471,6 +478,7 @@ if __name__ == "__main__":
     dirs_cfg = OmegaConf.load(args.dirs_config)
     cfg = OmegaConf.merge(main_cfg, dirs_cfg)
     cfg.dataset_base_dir = args.dataset_base_dir
+    cfg.load_model_dir = args.load_model_dir
     OmegaConf.resolve(cfg)
 
     if not os.path.exists(cfg.experiment_dir):
