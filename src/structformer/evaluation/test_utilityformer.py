@@ -77,7 +77,7 @@ class PriorUtilityInference:
                 batch = data[b * batch_size:]
             else:
                 batch = data[b * batch_size: (b+1) * batch_size]
-            
+            print("do not use sentence:",{use_utility_vector})
             data_tensors = [self.dataset.convert_to_tensors(d, self.tokenizer,use_utility_vector) for d in batch]
             data_tensors = self.dataset.collate_fn(data_tensors)
             predictions = prior_model.infer_once(self.cfg, self.model, data_tensors, self.cfg.device)
@@ -129,7 +129,7 @@ def inference_beam_decoding(model_dir, dirs_cfg, beam_size=3, max_scene_decodes=
 
     prior_inference = PriorUtilityInference(model_dir, dirs_cfg)
     test_dataset = prior_inference.dataset
-
+    
     if inference_visualization_dir:
         instruction_path = os.path.join(inference_visualization_dir, "index.json")
 
@@ -153,7 +153,8 @@ def inference_beam_decoding(model_dir, dirs_cfg, beam_size=3, max_scene_decodes=
             natural_language_instruction = ""
             for b in range(beam_size):
                 datum = test_dataset.get_raw_data(idx, inference_mode=True, shuffle_object_index=False)
-                if visualize_action_sequence:
+                
+                if not use_utility_vector:
                     natural_language_instruction = test_dataset.tokenizer.convert_structure_params_to_natural_language(datum["sentence"])
 
                 # not necessary, but just to ensure no test leakage
@@ -217,7 +218,7 @@ def inference_beam_decoding(model_dir, dirs_cfg, beam_size=3, max_scene_decodes=
             if inference_visualization_dir:
                 
                 index_file = load_json_file(instruction_path,data_type="dict")
-                if visualize_action_sequence:
+                if not use_utility_vector:
                     index_file[scene_id] = natural_language_instruction
                 dump_json_file(index_file,instruction_path,if_backup=False)
                 
@@ -235,11 +236,11 @@ def inference_beam_decoding(model_dir, dirs_cfg, beam_size=3, max_scene_decodes=
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run a simple model")
-    parser.add_argument("--dataset_base_dir", help='location of the dataset', type=str)
+    parser.add_argument("--dataset_base_dir", default="/home/lmy/workspace/Structformer/data/data_new_objects",help='location of the dataset', type=str)
     parser.add_argument("--main_config", help='config yaml file for the model',
                         default='configs/utilityformer.yaml',
                         type=str)
-    parser.add_argument("--model_dir",default="experiments/12-15-11/best_model",help='location for the saved model', type=str) #"experiments/yutang"
+    parser.add_argument("--model_dir",default="model/24-12-09",help='location for the saved model', type=str) #"experiments/yutang"
     parser.add_argument("--dirs_config", help='config yaml file for directories',
                         default='configs/data/circle_dirs.yaml',
                         type=str)
@@ -265,6 +266,5 @@ if __name__ == "__main__":
         os.makedirs(cfg.experiment_dir)
 
     OmegaConf.save(cfg, os.path.join(cfg.experiment_dir, "config.yaml"))
-    
     
     inference_beam_decoding(args.model_dir, dirs_cfg, **cfg.inference)

@@ -1,0 +1,52 @@
+。random_seed: 1
+device: 0
+obj_xytheta_relative: false
+save_model: true
+save_best_model: true
+dataset:
+  batch_size: 128
+  max_num_shape_parameters: 5
+  max_num_objects: 7
+  max_num_other_objects: 5
+  max_num_rearrange_features: 0
+  max_num_anchor_features: 0
+  num_pts: 1024
+  num_workers: 64
+  pin_memory: true
+  use_structure_frame: true
+  dirs:
+  - ./data_new_objects/examples_circle_new_objects/result
+  index_dirs:
+  - index_34k
+  vocab_dir: ./data_new_objects/type_vocabs_coarse.json
+model:
+  name: utilityformer
+  model_dim: 256
+  obj_selection:
+    num_attention_heads: 8
+    encoder_hidden_dim: 128
+    encoder_dropout: 0.2
+    encoder_activation: gelu
+    encoder_num_layers: 6
+    use_focal_loss: false
+    focal_loss_gamma: 2
+    model_dim: 256
+  pos_generation:
+    num_attention_heads: 8
+    encoder_hidden_dim: 512
+    encoder_dropout: 0.1
+    encoder_activation: gelu
+    encoder_num_layers: 8
+    structure_dropout: 0.2
+    object_dropout: 0.1
+    theta_loss_divide: 3
+    ignore_rgb: true
+    model_dim: 256
+training:
+  learning_rate: 0.0001
+  max_epochs: 200
+  l2: 0.0001
+  lr_restart: 3000
+  warmup: 10
+experiment_dir: ./experiments/20241208-181904
+dataset_base_dir: ./data_new_objects
