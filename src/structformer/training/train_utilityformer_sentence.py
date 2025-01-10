@@ -69,9 +69,6 @@ def preference_loss(policy_chosen_logps: torch.FloatTensor,
     return losses, chosen_rewards, rejected_rewards
 
 
-
-
-
 def train_model(cfg, model: UtilityFomrer, data_iter, optimizer, warmup, num_epochs, device, save_best_model, grad_clipping=1.0):
 
     if save_best_model:
@@ -526,7 +523,7 @@ if __name__ == "__main__":
                         type=str)
     args = parser.parse_args()
 
-    # # debug
+    # debug
     # args.dataset_base_dir = "/home/weiyu/data_drive/data_new_objects"
 
     assert os.path.exists(args.main_config), "Cannot find config yaml file at {}".format(args.main_config)

@@ -10,8 +10,8 @@ dataset:
   max_num_shape_parameters: 5
   max_num_objects: 7
   max_num_other_objects: 5
-  max_num_rearrange_features: 0
-  max_num_anchor_features: 0
+  max_num_rearrange_features: 1
+  max_num_anchor_features: 3
   num_pts: 1024
   num_workers: 64
   pin_memory: True
@@ -24,7 +24,7 @@ model:
   name: utilityformer
   model_dim: 256
   utility_vector: "avg_pool"
-  pretrained_model: "experiments/yutang"
+  pretrained_model: "model/24-12-09"
   obj_selection:
     num_attention_heads: 8
     encoder_hidden_dim: 128

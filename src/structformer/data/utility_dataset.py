@@ -805,7 +805,10 @@ class SequenceDataset(torch.utils.data.Dataset):
         for key in ["object_pad_mask", "other_object_pad_mask", "sentence", "sentence_pad_mask", "token_type_index",
                     "obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
                     "obj_x_inputs", "obj_y_inputs", "obj_z_inputs", "obj_theta_inputs", "position_index"]:
-            batched_data_dict[key] = torch.stack([dict[key] for dict in data], dim=0)
+            try:
+                batched_data_dict[key] = torch.stack([dict[key] for dict in data], dim=0)
+            except:
+                print(key,[dict[key] for dict in data])
         if "struct_position_index" in data[0]:
             # use structure frame
             for key in ["struct_position_index", "struct_token_type_index", "struct_pad_mask",
@@ -848,8 +851,7 @@ class PreferenceSequenceDataset(SequenceDataset):
                          num_pts, use_structure_frame,
                          filter_num_moved_objects_range, shuffle_object_index,
                          data_augmentation, debug)
-
-
+        
         # 筛选
         self.arrangement_data = []
         for data_root in data_roots:
@@ -863,8 +865,6 @@ class PreferenceSequenceDataset(SequenceDataset):
                 if pattern.search(natural_instruction):
                       self.arrangement_data.append(data_file)
         print(f"dataset_num: { len(self.arrangement_data)}")
-    
-
 
     def get_raw_data_from_preference(self, idx, inference_mode=False, shuffle_object_index=False):
         """
@@ -903,10 +903,79 @@ class PreferenceSequenceDataset(SequenceDataset):
 
         return datum
 
+class DistillPreferenceSequenceDataset(PreferenceSequenceDataset):
+    def __init__(self, data_roots, index_roots, split, tokenizer, max_num_objects, max_num_other_objects, max_num_shape_parameters, max_num_rearrange_features, max_num_anchor_features, num_pts, use_structure_frame, filter_num_moved_objects_range=None, shuffle_object_index=False, data_augmentation=True, debug=False, filter=[]):
+        super().__init__(data_roots, index_roots, split, tokenizer, max_num_objects, max_num_other_objects, max_num_shape_parameters, max_num_rearrange_features, max_num_anchor_features, num_pts, use_structure_frame, filter_num_moved_objects_range, shuffle_object_index, data_augmentation, debug, filter)
+
+    def convert_to_tensors(self, datum, tokenizer):
+        tensors = super().convert_to_tensors(datum, tokenizer)
+        origin_xyzs = torch.concat([tensors["xyzs"],tensors["other_xyzs"]])
+        origin_rgbs = torch.concat([tensors["rgbs"],tensors["other_rgbs"]])
+        
+        
+        
+        transform_xyzs = torch.concat([torch.stack(datum["_rearranged_xyz_0"]),torch.stack(datum["_unchanged_xyz_0"])])
+        transform_rgbs = torch.concat([torch.stack(datum["_rearranged_rgb_0"]),torch.stack(datum["_unchanged_rgb_0"])])
+        
+        points_shape = datum["_rearranged_xyz_0"][0].shape
+        len_points = 13-transform_xyzs.shape[0]
+        pad_point_xyzs = torch.zeros(len_points, *points_shape)
+        pad_point_rgbs = torch.zeros(len_points, *points_shape)
+        
+        transform_xyzs = torch.cat([transform_xyzs, pad_point_xyzs], dim=0)
+        transform_rgbs = torch.cat([transform_rgbs, pad_point_rgbs], dim=0)
+        
+        tensors["origin_xyzs"] = origin_xyzs
+        tensors["origin_rgbs"] = origin_rgbs
+        tensors["transform_xyzs"] = transform_xyzs
+        tensors["transform_rgbs"] = transform_rgbs
+
+        del tensors["sentence"]
+        del tensors["sentence_pad_mask"]
+
+        return tensors
+          
+    @staticmethod
+    def collate_fn(data):
+        """
+        :param data:
+        :return:
+        """
+
+        batched_data_dict = {}
+        for key in ["xyzs", "rgbs", "other_xyzs", "other_rgbs"]:
+            batched_data_dict[key] = torch.cat([dict[key] for dict in data], dim=0)
+        for key in ["object_pad_mask", "other_object_pad_mask",  "token_type_index",
+                    "obj_x_outputs", "obj_y_outputs", "obj_z_outputs", "obj_theta_outputs",
+                    "obj_x_inputs", "obj_y_inputs", "obj_z_inputs", "obj_theta_inputs", "position_index",
+                    "origin_xyzs","origin_rgbs","transform_xyzs","transform_rgbs"]:
+            try:
+                batched_data_dict[key] = torch.stack([dict[key] for dict in data], dim=0)
+            except:
+                print(key,[dict[key] for dict in data])
+        if "struct_position_index" in data[0]:
+            # use structure frame
+            for key in ["struct_position_index", "struct_token_type_index", "struct_pad_mask",
+                        "struct_x_inputs", "struct_y_inputs", "struct_z_inputs", "struct_theta_inputs"]:
+                batched_data_dict[key] = torch.stack([dict[key] for dict in data], dim=0)
+
+        return batched_data_dict
+          
+    def __len__(self):
+        return len(self.arrangement_data)     
+        
+    def __getitem__(self, idx):
+        raw_data = self.get_raw_data_from_preference(idx, shuffle_object_index=self.shuffle_object_index)
+        datum = self.convert_to_tensors(raw_data,self.tokenizer)
+
+        return datum
+
+
 if __name__ == "__main__":
-    
     tokenizer = Tokenizer("data_new_objects/type_vocabs_coarse.json")
-    dataset = PreferenceSequenceDataset(data_roots=["StructFormer-Preference/circle_rearranged"],
+    """
+    
+    dataset = DistillPreferenceSequenceDataset(data_roots=["StructFormer-Preference/circle_rearranged"],
                               index_roots=["index_34k"],
                               split="train",
                               tokenizer=tokenizer,
@@ -920,14 +989,13 @@ if __name__ == "__main__":
                               data_augmentation=False,
                               debug=False,
                               filter=["right","bottom"])
-    for i in range(0, 10):
-        d = dataset.get_raw_data_from_preference(i)
-    
-    
-    exit()
-    dataset = SequenceDataset(data_roots=["/home/weiyu/data_drive/data_new_objects/examples_circle_new_objects/result"],
+    dataloader = DataLoader(dataset,batch_size=1)
+    for data in dataloader:
+        exit()
+"""
+    dataset = SequenceDataset(data_roots=["/home/lmy/workspace/Structformer/data_new_objects/examples_circle_new_objects/result"],
                               index_roots=["index_34k"],
-                              split="train",
+                              split="test",
                               tokenizer=tokenizer,
                               max_num_objects=7,
                               max_num_other_objects=5,
@@ -939,6 +1007,7 @@ if __name__ == "__main__":
                               data_augmentation=False,
                               debug=False)
 
+    """ 
     for i in range(0, 10):
         d = dataset.get_raw_data(i)
         d = dataset.convert_to_tensors(d, dataset.tokenizer)
@@ -948,13 +1017,11 @@ if __name__ == "__main__":
         for k in d:
             print(k, d[k])
         input("next?")
-
+    """
     dataloader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=8,
                             collate_fn=SequenceDataset.collate_fn)
     for i, d in enumerate(dataloader):
         print(i)
         for k in d:
             print("--size", k, d[k].shape)
-        for k in d:
-            print(k, d[k])
         input("next?")
